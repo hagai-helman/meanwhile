@@ -138,6 +138,10 @@ class Job(object):
 
         self._queue = Queue()
 
+        # The set of all arguments ever added:
+
+        self._args = set()
+
         # The dictionaries that store the results and the excpetions:
 
         self._results = {}
@@ -155,6 +159,7 @@ class Job(object):
 
         # Locks:
 
+        self._alock = Lock()    # argument set lock
         self._rlock = Lock()    # results lock
         self._elock = Lock()    # exceptions lock
         self._tlock = Lock()    # thread dict lock
@@ -216,23 +221,29 @@ class Job(object):
                 self._threads[tid] = thread
                 thread.start()
             
-    def add(self, arg):
+    def add(self, arg, force = False):
         """Add a new input to the queue to be processed.
 
         Args:
             arg - the value to be processed. Must be hashable.
         """
-        self._queue.put((arg, 1))
-        self._start()
+        with self._alock:
+            if arg not in self._args or force:
+                self._args.add(arg)
+                self._queue.put((arg, 1))
+                self._start()
 
-    def add_many(self, args):
+    def add_many(self, args, force = False):
         """Add multiple new inputs to the queue to be processed.
 
         Args:
             args - an iterable that yields inputs. The inputs must be hashable.
         """
-        for arg in args:
-            self._queue.put((arg, 1))
+        with self._alock:
+            for arg in args:
+                if arg not in self._args or force:
+                    self._args.add(arg)
+                    self._queue.put((arg, 1))
         self._start()
 
     def get_n_pending(self):
@@ -423,7 +434,7 @@ class Job(object):
         with self._elock:
             if arg in self._exceptions:
                 del self._exceptions[arg]
-        self.add(arg)
+        self.add(arg, force = True)
 
     def retry_many(self, args):
         """Remove multiple inputs from the list of failed inputs, and put them
@@ -441,6 +452,6 @@ class Job(object):
             for arg in list(self._exceptions):
                 del self._exceptions[arg]
                 args.append(arg)
-            self.add_many(args)
+            self.add_many(args, force = True)
 
 __all__ = ["Job", "print", "Lock"]
