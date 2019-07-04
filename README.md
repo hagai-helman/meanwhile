@@ -118,3 +118,8 @@ arguments, and its ```__call__``` method is used as the target function.
 In order to provide a target factory instead of target function, one must set 
 the keyword argument ```factory``` to be ```True``` (this is true for both the
 ```Job``` class constructor and the ```set_target``` method).
+
+
+## Module Reference
+
+For the full module reference, see ```help(meanwhile)```.
