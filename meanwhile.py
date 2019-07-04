@@ -1,32 +1,36 @@
 """Very Easy Multithreading.
 
-This module is useful when you want to apply the same function to many values,
-and you want to do it in many threads. It's useful when the function requires
+If you want to call the same function on many inputs, in a multithreaded 
+fashion, ```meanwhile``` makes it easy.
+
+It can make your code significantly faster, especially if the function requires
 I/O operations, like file access or HTTP(S) queries.
 
 Simple Usage Example:
 
-    Assume you have a function named `test_url`, that gets a URL, downloads
+    Suppose you have a function named `test_url`, that gets a URL, downloads
     its content, and tests whether it contains the word "meanwhile". Also,
-    assume you have a file, named "urls.txt", where each line contains a URL
+    suppose you have a file, named `urls.txt`, where each line contains a URL
     you would like to apply `test_url` to.
 
     You can do the following:
 
     >>> from meanwhile import Job
-    >>> job = Job(test_url, 10)    # 10 threads will be used.
+    >>> job = Job(test_url, 10)  # at most 10 threads will be used concurrently.
     >>> urls = open("urls.txt").read().splitlines()
     >>> job.add_many(urls)
     >>> job.wait()
     >>> results = job.get_results()
 
-Note that the function you apply to each input must get one argument, and that
-this argument must be hashable.
-
-For more useful features, see help(meanwhile.Job).
+The target function (in the example: `test_url`) should get one argument, and
+this argument should be hashable.
 
 Note that if your function prints output, you probably want to use 
-meanwhile.print() instead of the built-in print() function.
+`meanwhile.print()` instead of Python's built-in `print()` function.
+This function prevents conflicts both with other threads, and with the progress
+updates shown by the `wait` method.
+
+For the full documentation, see https://github.com/hagai-helman/meanwhile.
 """
 
 from threading import Thread, Lock
@@ -37,8 +41,8 @@ from random import choice
 # Console Output And Printing
 # ***************************
 #
-# The method Job.wait() provides status updates, and hence we need functions
-# to overwrite status.
+# The method Job.wait() provides progress updates by printing a status line. 
+# Hence we need functions to overwrite status.
 #
 # The function meanwhile.print() is a wrapper for the builtin print() function
 # that is more thread-safe, and also works well with the status printing
@@ -108,18 +112,27 @@ def _generate_tid():
     return ''.join((choice("0123456789abcdef") for i in range(16)))
 
 class Job(object):
-    def __init__(self, target, n_threads = 1, n_attempts = 1):
+    def __init__(self, target, n_threads = 1, n_attempts = 1, factory = False):
         """Initialize a new Job object.
 
         Args:
-            target - A function. The target function is the function to be
-                     applied for each input. This function should get one
-                     argument, and this argument should be of hashable type.
-            n_threads - An integer. The number of threads to be used 
-                        simultaneously.
+            target - A target function or a target factory. 
+                     A target function is a function that gets one arguent of
+                     hashable type.
+                     A target factory is a function that gets no arguments and
+                     returns a target function (or, equivalently, a class for
+                     which __init__ takes no arguments, and __call__ is a
+                     target function).
+                     The target function is the function that will be called
+                     with each input as argument. If a target factory is given,
+                     a target function will be created for each thread spawned.                     
+            n_threads - An integer. The maximal number of threads to be used 
+                        concurrently.
             n_attempts - An integer. The number of attempts for each input
                          before it is considered 'failed', and the exception
                          is stored in the exceptions' dictionary.
+            factory - A boolean. Must be True if (and only if) the target
+                      argument is a target factory.
 
         Note:
             All arguments of __init__ can be later changed by the setter 
@@ -130,17 +143,17 @@ class Job(object):
         # Initialize Object's Fields
         # **************************
 
-        # The target function to be run on each input:
+        # The target function or target factory:
 
-        self._target = target
+        self._target = (target, factory)
 
         # The queue of inputs to be processed:
 
         self._queue = Queue()
 
-        # The set of all arguments ever added:
+        # The set of all inputs ever added:
 
-        self._args = set()
+        self._inputs = set()
 
         # The dictionaries that store the results and the excpetions:
 
@@ -159,7 +172,7 @@ class Job(object):
 
         # Locks:
 
-        self._alock = Lock()    # argument set lock
+        self._ilock = Lock()    # input set lock
         self._rlock = Lock()    # results lock
         self._elock = Lock()    # exceptions lock
         self._tlock = Lock()    # thread dict lock
@@ -172,6 +185,15 @@ class Job(object):
         # We define `worker`, which will be the target of each thread.
 
         def worker(tid):
+
+            # Initialize the thread's target_function, and memorize self._target.
+
+            target = self._target
+            if target[1]:
+                target_function = target[0]()
+            else:
+                target_function = target[0]
+
             while True:
 
                 # First, if the job is paused, we wait until it is resumed.
@@ -192,12 +214,22 @@ class Job(object):
                         del self._threads[tid]
                         return
 
+                # If target has changed - reinitialize the thread's 
+                # target_function.
+
+                if self._target != target:
+                    target = self._target
+                    if target[1]:
+                        target_function = target[0]()
+                    else:
+                        target_function = target[0]
+
                 # Finally, we try to get an input of the queue, and process
                 # it.
 
                 try:
                     (arg, attempt) = self._queue.get(timeout = 1)
-                    result = self._target(arg)
+                    result = target_function(arg)
                     with self._rlock:
                         self._results[arg] = result
                 except Empty:
@@ -225,11 +257,11 @@ class Job(object):
         """Add a new input to the queue to be processed.
 
         Args:
-            arg - the value to be processed. Must be hashable.
+            arg - the input to be processed. Must be hashable.
         """
-        with self._alock:
-            if arg not in self._args or force:
-                self._args.add(arg)
+        with self._ilock:
+            if arg not in self._inputs or force:
+                self._inputs.add(arg)
                 self._queue.put((arg, 1))
                 self._start()
 
@@ -239,10 +271,10 @@ class Job(object):
         Args:
             args - an iterable that yields inputs. The inputs must be hashable.
         """
-        with self._alock:
+        with self._ilock:
             for arg in args:
-                if arg not in self._args or force:
-                    self._args.add(arg)
+                if arg not in self._inputs or force:
+                    self._inputs.add(arg)
                     self._queue.put((arg, 1))
         self._start()
 
@@ -283,7 +315,7 @@ class Job(object):
         return template.format(*stats)
 
     def print_status(self):
-        """Show the current running status."""
+        """Show the job's current status."""
         print(self._get_status_string())
 
     def wait(self, show_status = True, timeout = None):
@@ -334,7 +366,7 @@ class Job(object):
         self._n_threads = n
         self._start()
 
-    def set_target(self, target):
+    def set_target(self, target, factory = False):
         """Replace the function to be applied for each input.
 
         This method is especially useful if you find a bug in your original
@@ -342,10 +374,10 @@ class Job(object):
         satisfied with the results you already have, and do not want to
         re-process them.
 
-        See help(Job.__init__) for details about the requirements of a target
-        function.
+        See help(Job.__init__) for details about the requirements for a target
+        function (or a target factory).
         """
-        self._target = target
+        self._target = (target, factory)
 
     def set_n_attempts(self, n):
         """See help(Job.__init__) for details."""
@@ -353,6 +385,8 @@ class Job(object):
 
     def kill(self):
         """Kill all threads.
+        
+        Equivalent to set_n_threads(0).
         """
         self.set_n_threads(0)
 

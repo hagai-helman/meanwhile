@@ -38,7 +38,7 @@ this argument should be hashable.
 Note that if your function prints output, you probably want to use 
 ```meanwhile.print()``` instead of Python's built-in ```print()``` function.
 This function prevents conflicts both with other threads, and with the progress
-reports shown by the ```wait``` method.
+updates shown by the ```wait``` method.
 
 
 ## In More Details
