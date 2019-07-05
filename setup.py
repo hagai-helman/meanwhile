@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='meanwhile',
-    version='1.0.1',
+    version='1.1.0',
     author='Hagai Helman Tov',
     author_email='hagai.helman@gmail.com',
     description='Very easy multithreading',
