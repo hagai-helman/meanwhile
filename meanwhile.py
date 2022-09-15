@@ -341,7 +341,7 @@ class Job(object):
                 with self._tlock:
                     threads = list(self._threads.values())
                 for thread in threads:
-                    while thread.isAlive():
+                    while thread.is_alive():
                         if timeout is None:
                             thread.join(timeout = 1)
                         else:
